@@ -20,6 +20,7 @@
 #include "esp_netif_sntp.h"
 #include "apns.h"
 #include "api_server.h"
+#include "token_store.h"
 
 static const char *TAG = "main";
 
@@ -133,6 +134,9 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
+    /* Token store (NVS must be ready first) */
+    ESP_ERROR_CHECK(token_store_init());
+
     /* WiFi */
     if (wifi_init_sta() != ESP_OK) {
         return;
@@ -155,5 +159,5 @@ void app_main(void)
     /* Start API server */
     api_server_start();
 
-    ESP_LOGI(TAG, "Ready for push requests via HTTP POST /push");
+    ESP_LOGI(TAG, "API server ready — HTTP Basic Auth required on all endpoints");
 }

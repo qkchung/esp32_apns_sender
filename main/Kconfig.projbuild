@@ -44,4 +44,18 @@ menu "APNs Configuration"
                 Disable for production (api.push.apple.com).
     endmenu
 
+    menu "API Authentication"
+        config API_AUTH_USER
+            string "HTTP API username"
+            default "admin"
+            help
+                Username for HTTP Basic Authentication on all API endpoints.
+
+        config API_AUTH_PASS
+            string "HTTP API password"
+            default "changeme"
+            help
+                Password for HTTP Basic Authentication on all API endpoints.
+    endmenu
+
 endmenu
