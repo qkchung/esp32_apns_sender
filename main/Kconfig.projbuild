@@ -1,0 +1,47 @@
+menu "APNs Configuration"
+
+    menu "WiFi Settings"
+        config APNS_WIFI_SSID
+            string "WiFi SSID"
+            default "myssid"
+            help
+                The SSID of the WiFi network to connect to.
+
+        config APNS_WIFI_PASSWORD
+            string "WiFi Password"
+            default "mypassword"
+            help
+                The password of the WiFi network.
+    endmenu
+
+    menu "Apple Push Notification Settings"
+        config APNS_TEAM_ID
+            string "Apple Team ID"
+            default ""
+            help
+                Your 10-character Apple Developer Team ID.
+                Find it at https://developer.apple.com/account → Membership.
+
+        config APNS_KEY_ID
+            string "APNs Key ID"
+            default ""
+            help
+                The 10-character Key ID of your APNs authentication key.
+                Found in the Apple Developer portal under Keys.
+
+        config APNS_BUNDLE_ID
+            string "App Bundle ID"
+            default "com.example.myapp"
+            help
+                The bundle identifier of the target iOS app.
+                This is used as the apns-topic header.
+
+        config APNS_USE_SANDBOX
+            bool "Use APNs Sandbox (development)"
+            default y
+            help
+                Enable to use api.sandbox.push.apple.com (for development builds).
+                Disable for production (api.push.apple.com).
+    endmenu
+
+endmenu
