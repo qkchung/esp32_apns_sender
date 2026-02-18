@@ -130,11 +130,11 @@ static void send_token_list(httpd_req_t *req,
 
     for (size_t i = 0; i < count; i++) {
         if (i > 0) httpd_resp_sendstr_chunk(req, ",");
-        /* Worst-case entry: ~140 chars */
-        char entry[256];
+        /* Worst-case entry: ~165 chars */
+        char entry[300];
         snprintf(entry, sizeof(entry),
-                 "{\"ip\":\"%s\",\"token\":\"%s\"}",
-                 entries[i].ip, entries[i].token);
+                 "{\"ip\":\"%s\",\"token\":\"%s\",\"server_type\":\"%s\"}",
+                 entries[i].ip, entries[i].token, entries[i].server_type);
         httpd_resp_sendstr_chunk(req, entry);
     }
 
@@ -187,8 +187,9 @@ static void blast_task(void *arg)
     cfg.use_sandbox = p->use_sandbox;
 
     static token_entry_t entries[TOKEN_MAX_ENTRIES];
-    size_t count = TOKEN_MAX_ENTRIES;
-    token_store_send_list(entries, &count, TOKEN_MAX_ENTRIES);
+    size_t count = 0;
+    const char *srv = p->use_sandbox ? "sandbox" : "production";
+    token_store_send_list_type(srv, entries, &count, TOKEN_MAX_ENTRIES);
 
     int ok = 0, fail = 0;
     for (size_t i = 0; i < count; i++) {
@@ -292,7 +293,7 @@ static esp_err_t token_register_handler(httpd_req_t *req)
 {
     if (!auth_check(req)) return ESP_OK;
 
-    char buf[300];
+    char buf[350];
     if (read_body(req, buf, sizeof(buf)) <= 0) {
         send_json_err(req, "400 Bad Request", "No body");
         return ESP_OK;
@@ -304,8 +305,9 @@ static esp_err_t token_register_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    const char *ip    = cJSON_GetStringValue(cJSON_GetObjectItem(root, "ip"));
-    const char *token = cJSON_GetStringValue(cJSON_GetObjectItem(root, "token"));
+    const char *ip          = cJSON_GetStringValue(cJSON_GetObjectItem(root, "ip"));
+    const char *token       = cJSON_GetStringValue(cJSON_GetObjectItem(root, "token"));
+    const char *server_type = cJSON_GetStringValue(cJSON_GetObjectItem(root, "server_type"));
 
     if (!ip || !token) {
         cJSON_Delete(root);
@@ -313,23 +315,30 @@ static esp_err_t token_register_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    /* Guard 1: IP in block list → ignore */
+    if (!server_type ||
+        (strcmp(server_type, "sandbox") != 0 && strcmp(server_type, "production") != 0)) {
+        cJSON_Delete(root);
+        send_json_err(req, "400 Bad Request", "Missing or invalid server_type (sandbox|production)");
+        return ESP_OK;
+    }
+
+    /* Guard 1: IP+server_type in block list → ignore */
     char existing[TOKEN_LEN];
-    if (token_store_block_get(ip, existing, sizeof(existing)) == ESP_OK) {
+    if (token_store_block_get(server_type, ip, existing, sizeof(existing)) == ESP_OK) {
         cJSON_Delete(root);
         send_json_ok(req, "{\"status\":\"ignored\",\"reason\":\"blocked\"}");
         return ESP_OK;
     }
 
-    /* Guard 2: identical ip+token already in send list → ignore */
-    if (token_store_send_get(ip, existing, sizeof(existing)) == ESP_OK
+    /* Guard 2: identical server_type+ip+token already in send list → ignore */
+    if (token_store_send_get(server_type, ip, existing, sizeof(existing)) == ESP_OK
         && strcmp(existing, token) == 0) {
         cJSON_Delete(root);
         send_json_ok(req, "{\"status\":\"ignored\",\"reason\":\"no_change\"}");
         return ESP_OK;
     }
 
-    esp_err_t ret = token_store_send_set(ip, token);
+    esp_err_t ret = token_store_send_set(server_type, ip, token);
     cJSON_Delete(root);
 
     if (ret != ESP_OK) {
@@ -337,7 +346,7 @@ static esp_err_t token_register_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    ESP_LOGI(TAG, "token registered: ip=%s", ip);
+    ESP_LOGI(TAG, "token registered: ip=%s server_type=%s", ip, server_type);
     send_json_ok(req, "{\"status\":\"ok\"}");
     return ESP_OK;
 }
