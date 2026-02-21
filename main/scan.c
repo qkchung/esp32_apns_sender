@@ -156,6 +156,9 @@ void app_main(void)
     g_apns_config.use_sandbox  = false;
 #endif
 
+    /* Init APNs module (creates internal send mutex) */
+    ESP_ERROR_CHECK(apns_init());
+
     /* Start API server */
     api_server_start();
 

@@ -12,6 +12,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_crt_bundle.h"
@@ -24,9 +25,18 @@
 #include "mbedtls/entropy.h"
 #include "mbedtls/ctr_drbg.h"
 
+#include "cJSON.h"
 #include "apns.h"
 
 static const char *TAG = "apns";
+
+static SemaphoreHandle_t s_apns_mutex = NULL;
+
+esp_err_t apns_init(void)
+{
+    s_apns_mutex = xSemaphoreCreateMutex();
+    return s_apns_mutex ? ESP_OK : ESP_FAIL;
+}
 
 #define APNS_HOST_PRODUCTION "api.push.apple.com"
 #define APNS_HOST_SANDBOX    "api.sandbox.push.apple.com"
@@ -284,47 +294,43 @@ esp_err_t apns_send_notification(const apns_config_t *config,
         return ESP_ERR_INVALID_ARG;
     }
 
+    xSemaphoreTake(s_apns_mutex, portMAX_DELAY);
+
+    char *json_str = NULL;
+    bool hd_open   = false;
+
     /* ---- 1. Generate JWT ---- */
     char jwt[1024];
     esp_err_t ret = generate_jwt(config, jwt, sizeof(jwt));
     if (ret != ESP_OK) {
-        return ret;
+        goto done;
     }
 
     /* ---- 2. Build JSON payload ---- */
-    char json[512];
-    int jlen = 0;
-
-    if (notification->badge >= 0 && notification->sound) {
-        jlen = snprintf(json, sizeof(json),
-            "{\"aps\":{\"alert\":{\"title\":\"%s\",\"body\":\"%s\"},"
-            "\"badge\":%d,\"sound\":\"%s\"}}",
-            notification->title, notification->body,
-            notification->badge, notification->sound);
-    } else if (notification->badge >= 0) {
-        jlen = snprintf(json, sizeof(json),
-            "{\"aps\":{\"alert\":{\"title\":\"%s\",\"body\":\"%s\"},"
-            "\"badge\":%d}}",
-            notification->title, notification->body, notification->badge);
-    } else if (notification->sound) {
-        jlen = snprintf(json, sizeof(json),
-            "{\"aps\":{\"alert\":{\"title\":\"%s\",\"body\":\"%s\"},"
-            "\"sound\":\"%s\"}}",
-            notification->title, notification->body, notification->sound);
-    } else {
-        jlen = snprintf(json, sizeof(json),
-            "{\"aps\":{\"alert\":{\"title\":\"%s\",\"body\":\"%s\"}}}",
-            notification->title, notification->body);
+    cJSON *root_j  = cJSON_CreateObject();
+    cJSON *aps_j   = cJSON_AddObjectToObject(root_j, "aps");
+    cJSON *alert_j = cJSON_AddObjectToObject(aps_j, "alert");
+    cJSON_AddStringToObject(alert_j, "title", notification->title);
+    cJSON_AddStringToObject(alert_j, "body",  notification->body);
+    if (notification->badge >= 0) {
+        cJSON_AddNumberToObject(aps_j, "badge", notification->badge);
     }
-    if (jlen < 0 || (size_t)jlen >= sizeof(json)) {
-        ESP_LOGE(TAG, "JSON payload too large");
-        return ESP_FAIL;
+    if (notification->sound) {
+        cJSON_AddStringToObject(aps_j, "sound", notification->sound);
     }
+    json_str = cJSON_PrintUnformatted(root_j);
+    cJSON_Delete(root_j);
+    if (!json_str) {
+        ESP_LOGE(TAG, "cJSON failed to build payload");
+        ret = ESP_FAIL;
+        goto done;
+    }
+    int jlen = (int)strlen(json_str);
 
-    ESP_LOGI(TAG, "Payload (%d bytes): %s", jlen, json);
+    ESP_LOGI(TAG, "Payload (%d bytes): %s", jlen, json_str);
 
     /* ---- 3. Prepare static callback context ---- */
-    s_post_body   = json;
+    s_post_body   = json_str;
     s_post_len    = (size_t)jlen;
     s_post_offset = 0;
     s_resp_done   = false;
@@ -346,16 +352,24 @@ esp_err_t apns_send_notification(const apns_config_t *config,
     snprintf(uri, sizeof(uri), "https://%s", host);
 
     struct sh2lib_handle hd;
+    tls_keep_alive_cfg_t ka = {
+        .keep_alive_enable   = true,
+        .keep_alive_idle     = 5,
+        .keep_alive_interval = 5,
+        .keep_alive_count    = 3,
+    };
     struct sh2lib_config_t sh2cfg = {
-        .uri = uri,
+        .uri               = uri,
         .crt_bundle_attach = esp_crt_bundle_attach,
+        .keep_alive_cfg    = &ka,
     };
 
     ESP_LOGI(TAG, "Connecting to %s ...", host);
     if (sh2lib_connect(&sh2cfg, &hd) != 0) {
         ESP_LOGE(TAG, "HTTP/2 connection failed");
-        return ESP_FAIL;
+        goto done;
     }
+    hd_open = true;
     ESP_LOGI(TAG, "HTTP/2 connected");
 
     /* ---- 6. Submit POST with custom headers ---- */
@@ -375,8 +389,7 @@ esp_err_t apns_send_notification(const apns_config_t *config,
                                         apns_send_cb, apns_recv_cb);
     if (sid < 0) {
         ESP_LOGE(TAG, "Failed to submit POST request");
-        sh2lib_free(&hd);
-        return ESP_FAIL;
+        goto done;
     }
     ESP_LOGI(TAG, "POST submitted (stream %d)", sid);
 
@@ -408,7 +421,9 @@ esp_err_t apns_send_notification(const apns_config_t *config,
         ESP_LOGE(TAG, "Timed out waiting for APNs response");
     }
 
-    /* ---- 9. Cleanup ---- */
-    sh2lib_free(&hd);
+done:
+    cJSON_free(json_str);
+    if (hd_open) sh2lib_free(&hd);
+    xSemaphoreGive(s_apns_mutex);
     return ret;
 }

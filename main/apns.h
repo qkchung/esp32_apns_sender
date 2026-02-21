@@ -40,6 +40,12 @@ typedef struct {
 } apns_notification_t;
 
 /**
+ * @brief Initialise the APNs module (creates the internal send mutex).
+ *        Must be called once from app_main before api_server_start().
+ */
+esp_err_t apns_init(void);
+
+/**
  * @brief Send an Apple Push Notification via APNs HTTP/2 API
  *
  * This function generates a JWT (ES256) from the provided .p8 key,

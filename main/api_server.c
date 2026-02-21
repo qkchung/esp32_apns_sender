@@ -10,6 +10,7 @@
 #include "esp_http_server.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include <cJSON.h>
 #include <string.h>
 #include <stdlib.h>
@@ -18,6 +19,9 @@
 #include "sdkconfig.h"
 
 static const char *TAG = "api_server";
+
+#define MAX_CONCURRENT_PUSH  3
+static SemaphoreHandle_t s_push_sem = NULL;
 
 extern apns_config_t g_apns_config;
 
@@ -175,6 +179,7 @@ static void apns_send_task(void *arg)
              ret == ESP_OK ? "ok" : "fail",
              p->use_sandbox ? "sandbox" : "production");
 
+    xSemaphoreGive(s_push_sem);
     free(p);
     vTaskDelete(NULL);
 }
@@ -186,7 +191,7 @@ static void blast_task(void *arg)
     apns_config_t cfg = g_apns_config;
     cfg.use_sandbox = p->use_sandbox;
 
-    static token_entry_t entries[TOKEN_MAX_ENTRIES];
+    token_entry_t entries[TOKEN_MAX_ENTRIES];
     size_t count = 0;
     const char *srv = p->use_sandbox ? "sandbox" : "production";
     token_store_send_list_type(srv, entries, &count, TOKEN_MAX_ENTRIES);
@@ -275,7 +280,14 @@ static esp_err_t push_handler(httpd_req_t *req)
     ESP_LOGI(TAG, "push queued: token=%.16s... server=%s",
              p->device_token, p->use_sandbox ? "sandbox" : "production");
 
+    if (xSemaphoreTake(s_push_sem, 0) != pdTRUE) {
+        free(p);
+        send_json_err(req, "503 Service Unavailable", "Too many concurrent pushes");
+        return ESP_OK;
+    }
+
     if (xTaskCreate(apns_send_task, "apns_push", 16384, p, 5, NULL) != pdPASS) {
+        xSemaphoreGive(s_push_sem);
         free(p);
         send_json_err(req, "500 Internal Server Error", "Task create failed");
         return ESP_OK;
@@ -671,6 +683,8 @@ static esp_err_t blast_handler(httpd_req_t *req)
 
 esp_err_t api_server_start(void)
 {
+    s_push_sem = xSemaphoreCreateCounting(MAX_CONCURRENT_PUSH, MAX_CONCURRENT_PUSH);
+
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_uri_handlers = 16;
 
