@@ -18,6 +18,14 @@ Before project configuration and build, be sure to set the correct chip target u
 
 ### Configure the project
 
+On a fresh checkout, create your local config file from the template:
+
+```powershell
+Copy-Item .sdkconfig.defaults sdkconfig.defaults
+```
+
+Then edit `sdkconfig.defaults` with your local values.
+
 Open the project configuration menu (`idf.py menuconfig`).
 
 In the `Example Configuration` menu:

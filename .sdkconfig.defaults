@@ -1,0 +1,11 @@
+# Optional local defaults template (sanitized)
+# This mirrors sdkconfig.defaults format.
+
+CONFIG_APNS_WIFI_SSID="your-ssid"
+CONFIG_APNS_WIFI_PASSWORD="your-password"
+CONFIG_APNS_TEAM_ID="XXXXXXXXXX"
+CONFIG_APNS_KEY_ID="XXXXXXXXXX"
+CONFIG_APNS_BUNDLE_ID="com.example.myapp"
+CONFIG_APNS_USE_SANDBOX=y
+CONFIG_API_AUTH_USER="admin"
+CONFIG_API_AUTH_PASS="changeme"
