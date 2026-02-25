@@ -174,10 +174,15 @@ static void apns_send_task(void *arg)
     };
 
     esp_err_t ret = apns_send_notification(&cfg, &notif);
-    ESP_LOGI(TAG, "push [%s] → %s (%s)",
-             p->device_token,
-             ret == ESP_OK ? "ok" : "fail",
-             p->use_sandbox ? "sandbox" : "production");
+    if (ret == APNS_ERR_UNREGISTERED) {
+        ESP_LOGW(TAG, "push [%.16s...]: device unregistered (remove token manually if needed)",
+                 p->device_token);
+    } else {
+        ESP_LOGI(TAG, "push [%.16s...] → %s (%s)",
+                 p->device_token,
+                 ret == ESP_OK ? "ok" : "fail",
+                 p->use_sandbox ? "sandbox" : "production");
+    }
 
     xSemaphoreGive(s_push_sem);
     free(p);
@@ -207,9 +212,17 @@ static void blast_task(void *arg)
             .custom_payload = p->has_custom ? p->custom_payload : NULL,
         };
         esp_err_t r = apns_send_notification(&cfg, &n);
-        if (r == ESP_OK) ok++; else fail++;
-        ESP_LOGI(TAG, "blast [%s]: %s", entries[i].ip,
-                 r == ESP_OK ? "ok" : "fail");
+        if (r == ESP_OK) {
+            ok++;
+            ESP_LOGI(TAG, "blast [%s]: ok", entries[i].ip);
+        } else if (r == APNS_ERR_UNREGISTERED) {
+            fail++;
+            ESP_LOGW(TAG, "blast [%s]: unregistered — removing from store", entries[i].ip);
+            token_store_send_del(entries[i].ip);
+        } else {
+            fail++;
+            ESP_LOGW(TAG, "blast [%s]: fail", entries[i].ip);
+        }
     }
 
     ESP_LOGI(TAG, "blast done — %d ok, %d fail (server=%s)",

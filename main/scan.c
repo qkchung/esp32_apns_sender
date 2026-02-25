@@ -30,7 +30,8 @@ static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT  BIT0
 #define WIFI_FAIL_BIT       BIT1
 #define WIFI_MAX_RETRY      5
-static int s_retry_num = 0;
+static int  s_retry_num      = 0;
+static bool s_connected_once = false;
 
 /* Embedded APNs authentication key (.p8) */
 extern const char apns_auth_key_start[] asm("_binary_apns_auth_key_p8_start");
@@ -42,16 +43,23 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (s_retry_num < WIFI_MAX_RETRY) {
+        if (s_connected_once) {
+            /* After first successful connect: always retry — no hard cap */
             esp_wifi_connect();
             s_retry_num++;
-            ESP_LOGI(TAG, "WiFi reconnect attempt %d/%d", s_retry_num, WIFI_MAX_RETRY);
+            ESP_LOGI(TAG, "WiFi reconnecting (attempt %d)...", s_retry_num);
+        } else if (s_retry_num < WIFI_MAX_RETRY) {
+            /* Initial startup: respect cap so wifi_init_sta() can fail fast */
+            esp_wifi_connect();
+            s_retry_num++;
+            ESP_LOGI(TAG, "WiFi connect attempt %d/%d", s_retry_num, WIFI_MAX_RETRY);
         } else {
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        s_connected_once = true;
         s_retry_num = 0;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     }

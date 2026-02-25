@@ -32,6 +32,11 @@ static const char *TAG = "apns";
 
 static SemaphoreHandle_t s_apns_mutex = NULL;
 
+/* JWT cache — reuse for up to 55 min to avoid Apple's TooManyProviderTokenUpdates (1 h limit) */
+#define JWT_VALID_SECONDS  3300
+static char   s_jwt_cache[1024] = {0};
+static time_t s_jwt_generated_at = 0;
+
 esp_err_t apns_init(void)
 {
     s_apns_mutex = xSemaphoreCreateMutex();
@@ -298,12 +303,18 @@ esp_err_t apns_send_notification(const apns_config_t *config,
 
     char *json_str = NULL;
     bool hd_open   = false;
+    esp_err_t ret  = ESP_FAIL;
 
-    /* ---- 1. Generate JWT ---- */
-    char jwt[1024];
-    esp_err_t ret = generate_jwt(config, jwt, sizeof(jwt));
-    if (ret != ESP_OK) {
-        goto done;
+    /* ---- 1. JWT (cached; regenerate only when expired) ---- */
+    time_t now;
+    time(&now);
+    if (s_jwt_generated_at == 0 || (now - s_jwt_generated_at) >= JWT_VALID_SECONDS) {
+        ret = generate_jwt(config, s_jwt_cache, sizeof(s_jwt_cache));
+        if (ret != ESP_OK) goto done;
+        s_jwt_generated_at = now;
+        ESP_LOGI(TAG, "JWT refreshed");
+    } else {
+        ESP_LOGD(TAG, "JWT cache hit (age=%lds)", (long)(now - s_jwt_generated_at));
     }
 
     /* ---- 2. Build JSON payload ---- */
@@ -342,7 +353,7 @@ esp_err_t apns_send_notification(const apns_config_t *config,
     snprintf(path, sizeof(path), "/3/device/%s", notification->device_token);
 
     char auth_hdr[1100];
-    snprintf(auth_hdr, sizeof(auth_hdr), "bearer %s", jwt);
+    snprintf(auth_hdr, sizeof(auth_hdr), "bearer %s", s_jwt_cache);
 
     const char *host = config->use_sandbox ? APNS_HOST_SANDBOX
                                            : APNS_HOST_PRODUCTION;
@@ -406,19 +417,21 @@ esp_err_t apns_send_notification(const apns_config_t *config,
     }
 
     /* ---- 8. Evaluate response ---- */
-    if (s_resp_len > 0) {
+    if (s_resp_done && s_resp_len > 0) {
         /* APNs returns an empty body on 200 OK; a JSON body means error */
-        ESP_LOGW(TAG, "APNs response body: %s", s_resp_body);
-    }
-    if (s_resp_done && s_resp_len == 0) {
-        ESP_LOGI(TAG, "APNs returned 200 OK (empty body = success)");
+        ESP_LOGW(TAG, "APNs error response: %s", s_resp_body);
+        if (strstr(s_resp_body, "Unregistered") != NULL) {
+            ESP_LOGW(TAG, "APNs: device token is unregistered");
+            ret = APNS_ERR_UNREGISTERED;
+        } else {
+            ret = ESP_FAIL;
+        }
+    } else if (s_resp_done && s_resp_len == 0) {
+        ESP_LOGI(TAG, "APNs: 200 OK");
         ret = ESP_OK;
-    } else if (s_resp_done) {
-        /* Got a response body — likely an error JSON from APNs */
-        ESP_LOGW(TAG, "APNs returned an error (see response above)");
-        ret = ESP_FAIL;
     } else {
-        ESP_LOGE(TAG, "Timed out waiting for APNs response");
+        ESP_LOGE(TAG, "APNs: timed out waiting for response");
+        ret = ESP_FAIL;
     }
 
 done:

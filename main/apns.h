@@ -11,6 +11,9 @@
 #include <stddef.h>
 #include "esp_err.h"
 
+/** Returned when APNs reports the device token is no longer registered. */
+#define APNS_ERR_UNREGISTERED  ((esp_err_t)0x8001)
+
 #ifdef __cplusplus
 extern "C" {
 #endif
