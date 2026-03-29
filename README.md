@@ -2,7 +2,7 @@
 
 An ESP32 firmware project that connects to Wi-Fi, starts a local HTTP API, and sends Apple Push Notifications directly to APNs without a separate cloud relay.
 
-This project is aimed at LAN-based IoT deployments where the device itself is the event source and also the push gateway. Instead of sending alerts to a remote backend first, the ESP32 can call Apple directly and notify iPhone clients with very little infrastructure.
+This project is aimed at LAN-based IoT deployments where the device itself is already the event source and can also act as the push gateway. Instead of sending alerts to a remote backend first, the ESP32 can call Apple directly and notify iPhone clients with very little infrastructure.
 
 ## What It Provides
 
@@ -11,9 +11,12 @@ This project is aimed at LAN-based IoT deployments where the device itself is th
 - Local REST API for:
   - sending a push to one device
   - broadcasting the same push to all registered devices
-  - registering, listing, deleting, and blocking device tokens
+  - registering, listing, deleting, whitelisting, and blacklisting device tokens
 - Persistent token storage in NVS, so device mappings survive reboot
 - Separate sandbox and production token namespaces
+- Token access control with:
+  - send list as the whitelist
+  - block list as the blacklist
 - Basic Auth protection on all HTTP endpoints
 - Background push tasks with a concurrency cap for single-send requests
 - Automatic removal of unregistered tokens during broadcast failures
@@ -76,6 +79,8 @@ The tradeoff is security and operational hardening. This device stores notificat
 - Stores device tokens in NVS flash
 - Keys entries by IPv4 address string
 - Keeps separate send/block lists
+- Treats the send list as a whitelist of devices allowed to receive broadcasts
+- Treats the block list as a blacklist of devices whose registration or delivery is suppressed
 - Keeps separate sandbox/production namespaces
 - Preserves entries across reboots
 
@@ -85,6 +90,8 @@ The tradeoff is security and operational hardening. This device stores notificat
 - `POST /push` is queued into a background FreeRTOS task and limited to 3 concurrent sends.
 - `POST /blast` also runs in the background, but it sends to registered devices one-by-one within that task.
 - If APNs reports a token as unregistered during broadcast, that token is removed from the send list.
+- Token registration is ignored when that device IP is already blacklisted for the selected `server_type`.
+- Devices can be moved between the whitelist and blacklist using the token-management endpoints.
 - The API accepts a `custom_payload` field, but the current APNs payload builder only sends `aps.alert`, optional `badge`, and optional `sound`.
 - The HTTP API is plain HTTP, not HTTPS.
 
@@ -237,6 +244,23 @@ Possible responses:
 {"status":"ignored","reason":"no_change"}
 ```
 
+### Whitelist / Blacklist Management
+
+The firmware keeps two persistent token lists:
+
+- whitelist: the send list used by `/blast`
+- blacklist: the block list used to suppress or opt out a device
+
+Available endpoints:
+
+- `GET /tokens/send` to view the whitelist
+- `DELETE /tokens/send` to remove a device from the whitelist
+- `GET /tokens/block` to view the blacklist
+- `POST /tokens/block` to add a device directly to the blacklist
+- `DELETE /tokens/block` to remove a device from the blacklist
+- `POST /tokens/move-to-block` to move a device from whitelist to blacklist
+- `POST /tokens/move-to-send` to move a device from blacklist to whitelist
+
 ## Example curl Commands
 
 ```bash
@@ -255,40 +279,79 @@ curl -u "$AUTH" -X POST "http://$ESP_IP/blast" \
   -H "Content-Type: application/json" \
   -d '{"title":"Broadcast","body":"Hello everyone","server_type":"sandbox"}'
 
-<<<<<<< Updated upstream
-# List all send-list tokens
-curl -u "$AUTH" http://$ESP_IP/tokens/send
-
-# Delete a token from the send list
-curl -u "$AUTH" -X DELETE http://$ESP_IP/tokens/send \
-  -H "Content-Type: application/json" \
-  -d '{"ip":"192.168.1.42"}'
-
-# List all block-list tokens
-curl -u "$AUTH" http://$ESP_IP/tokens/block
-
-# Add a token directly to the block list
-curl -u "$AUTH" -X POST http://$ESP_IP/tokens/block \
-  -H "Content-Type: application/json" \
-  -d '{"ip":"192.168.1.42","token":"YOUR_TOKEN","server_type":"sandbox"}'
-
-# Delete a token from the block list
-curl -u "$AUTH" -X DELETE http://$ESP_IP/tokens/block \
-  -H "Content-Type: application/json" \
-  -d '{"ip":"192.168.1.42"}'
-
-# Move a device from send list → block list
-curl -u "$AUTH" -X POST http://$ESP_IP/tokens/move-to-block \
-  -H "Content-Type: application/json" \
-  -d '{"ip":"192.168.1.42"}'
-
-# Move a device from block list → send list
-curl -u "$AUTH" -X POST http://$ESP_IP/tokens/move-to-send \
-  -H "Content-Type: application/json" \
-  -d '{"ip":"192.168.1.42"}'
-=======
+# List all whitelist / send-list tokens
 curl -u "$AUTH" "http://$ESP_IP/tokens/send"
->>>>>>> Stashed changes
+
+# Delete a token from the whitelist / send list
+curl -u "$AUTH" -X DELETE "http://$ESP_IP/tokens/send" \
+  -H "Content-Type: application/json" \
+  -d '{"ip":"192.168.1.42"}'
+
+# List all blacklist / block-list tokens
+curl -u "$AUTH" "http://$ESP_IP/tokens/block"
+
+# Add a token directly to the blacklist / block list
+curl -u "$AUTH" -X POST "http://$ESP_IP/tokens/block" \
+  -H "Content-Type: application/json" \
+  -d '{"ip":"192.168.1.42","token":"YOUR_TOKEN"}'
+
+# Delete a token from the blacklist / block list
+curl -u "$AUTH" -X DELETE "http://$ESP_IP/tokens/block" \
+  -H "Content-Type: application/json" \
+  -d '{"ip":"192.168.1.42"}'
+
+# Move a device from whitelist / send list -> blacklist / block list
+curl -u "$AUTH" -X POST "http://$ESP_IP/tokens/move-to-block" \
+  -H "Content-Type: application/json" \
+  -d '{"ip":"192.168.1.42"}'
+
+# Move a device from blacklist / block list -> whitelist / send list
+curl -u "$AUTH" -X POST "http://$ESP_IP/tokens/move-to-send" \
+  -H "Content-Type: application/json" \
+  -d '{"ip":"192.168.1.42"}'
+```
+
+## Architecture Diagram
+
+```text
+                         LOCAL LAN / HOME NETWORK
+
+   +--------------------+          HTTP control / logs          +--------------------+
+   |      JLSHOME       | <-----------------------------------> |   arduino_boiler   |
+   |   iPhone app       |                                       |  boiler controller |
+   |                    |                                       |                    |
+   | - UI / scheduling  |                                       | - sensors          |
+   | - Live Activities  |                                       | - relay / timer    |
+   | - APNs token owner |                                       | - session logs     |
+   +---------+----------+                                       +---------+----------+
+             |                                                            |
+             | POST /token                                                | POST /blast
+             | register APNs token                                        | send alert event
+             v                                                            v
+                    +------------------------------------------------+
+                    |               esp32_apns_sender                |
+                    |            local APNs push gateway             |
+                    |                                                |
+                    | - stores APNs tokens                           |
+                    | - whitelist = send list                        |
+                    | - blacklist = block list                       |
+                    | - Basic Auth HTTP API                          |
+                    | - /token registration                          |
+                    | - /push and /blast delivery                    |
+                    +---------------------+--------------------------+
+                                          |
+                                          | HTTPS / HTTP2
+                                          v
+                                 +-------------------+
+                                 |    Apple APNs     |
+                                 +-------------------+
+                                          |
+                                          | push notification
+                                          v
+                                   +--------------+
+                                   |   JLSHOME    |
+                                   |   on iPhone  |
+                                   +--------------+
 ```
 
 ## Project Layout
