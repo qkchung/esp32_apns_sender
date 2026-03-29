@@ -1,195 +1,261 @@
-# apns_pusher
+# ESP32 APNs Sender
 
-An ESP32 firmware that acts as a self-hosted Apple Push Notification (APNs) gateway. It connects to WiFi, exposes a REST API over simple auth HTTP, and pushes notifications to iOS devices directly via Apple's APNs HTTP/2 API — with no cloud backend required. Free of saas subscription, de-cloud , 0.2w power saving, being iot component sending instant alert to ios clients ( no more slow ifttt or homekit )
+An ESP32 firmware project that connects to Wi-Fi, starts a local HTTP API, and sends Apple Push Notifications directly to APNs without a separate cloud relay.
 
-This is a code demo for push service for lan iot project, highly recommend you harden security in your project, never expose this endpoint directly to internet
-I assumed lan devices are static assign with fixed ip , so ip is used as key here 
+This project is aimed at LAN-based IoT deployments where the device itself is the event source and also the push gateway. Instead of sending alerts to a remote backend first, the ESP32 can call Apple directly and notify iPhone clients with very little infrastructure.
 
-## Features
+## What It Provides
 
-- **Token-based APNs auth** — generates ES256 JWTs from your `.p8` key using mbedTLS; no certificate-based auth needed
-- **HTTP/2 to Apple** — uses `sh2lib` (nghttp2 wrapper) for direct APNs connections with TLS verified against Apple's CA bundle
-- **REST API** — HTTP Basic Auth protected endpoints for sending notifications and managing device tokens
-- **Persistent token store** — NVS-backed send/block lists, keyed by device IP; survives reboots
-- **Broadcast** — blast the same notification to every registered device in one call
-- **Sandbox / Production** — selectable per-request via `server_type` field
-- **Up to 3 concurrent pushes** — semaphore-guarded background FreeRTOS tasks
+- Direct APNs delivery from the ESP32 using Apple's HTTP/2 API
+- Token-based APNs authentication using a `.p8` key, Team ID, and Key ID
+- Local REST API for:
+  - sending a push to one device
+  - broadcasting the same push to all registered devices
+  - registering, listing, deleting, and blocking device tokens
+- Persistent token storage in NVS, so device mappings survive reboot
+- Separate sandbox and production token namespaces
+- Basic Auth protection on all HTTP endpoints
+- Background push tasks with a concurrency cap for single-send requests
+- Automatic removal of unregistered tokens during broadcast failures
 
-## Hardware
+## Why The Push Server Runs On The IoT Device
 
-Any ESP32 variant supported by ESP-IDF with enough RAM for TLS + HTTP/2 (ESP32, ESP32-S3, etc.).
+This firmware is built around the idea that the IoT device is already the thing that knows an event happened.
 
-| Supported Targets | ESP32 | ESP32-S2 | ESP32-S3 | ESP32-C3 | ESP32-C6 |
-|---|---|---|---|---|---|
+Serving the push API on the ESP32 itself gives you:
 
-## Prerequisites
+- Lower latency: the device can notify iOS clients immediately after a sensor event, relay trigger, or local automation decision
+- No mandatory cloud backend: no VPS, webhook worker, Firebase relay, or custom middle tier is required just to deliver a push
+- Better local autonomy: pushes can still be initiated by the device as long as it has internet access to APNs, even if your own backend is offline
+- Simpler architecture for LAN projects: the same box can host the local control endpoint, hold device-token state, and send alerts
+- Lower operating cost and power footprint than keeping an always-on general-purpose server around for lightweight notification tasks
 
-- [ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/get-started/) v5.x
-- An [Apple Developer](https://developer.apple.com) account
-- An APNs authentication key (`.p8` file) created in the Apple Developer portal under **Certificates, Identifiers & Profiles → Keys**
+The tradeoff is security and operational hardening. This device stores notification credentials, exposes an HTTP API, and is resource-constrained, so it should be treated as a trusted LAN component rather than a public internet service.
 
-## Getting Started
+## How It Works
 
-### 1. Clone the repository
+1. The ESP32 boots and initializes NVS.
+2. It connects to Wi-Fi in station mode.
+3. It syncs time using SNTP, because APNs JWT authentication requires a valid timestamp.
+4. It loads APNs configuration from `menuconfig` and embeds the `.p8` key from `main/certs/apns_auth_key.p8`.
+5. It starts an HTTP server.
+6. API clients call the ESP32 over the local network.
+7. The ESP32 generates an ES256 JWT and opens an HTTP/2 TLS connection to Apple.
+8. APNs delivers the notification to the iOS app identified by your bundle ID.
 
-```bash
-git clone https://github.com/your-username/apns_pusher.git
-cd apns_pusher
-```
+## Current Implemented Features
 
-### 2. Add your APNs key
+### APNs Client
 
-Copy your `.p8` key file into the certs directory with the exact filename the build system expects:
+- Uses APNs token authentication, not certificate auth
+- Generates ES256 JWTs locally with mbedTLS
+- Reuses JWTs for about 55 minutes to avoid excessive provider-token refreshes
+- Connects to:
+  - `api.sandbox.push.apple.com`
+  - `api.push.apple.com`
+- Verifies TLS using ESP-IDF's certificate bundle
 
-```
+### Local API Server
+
+- Runs an HTTP server on the ESP32
+- Requires HTTP Basic Auth on every endpoint
+- Supports:
+  - `POST /push`
+  - `POST /blast`
+  - `POST /token`
+  - `GET /tokens/send`
+  - `DELETE /tokens/send`
+  - `GET /tokens/block`
+  - `POST /tokens/block`
+  - `DELETE /tokens/block`
+  - `POST /tokens/move-to-block`
+  - `POST /tokens/move-to-send`
+
+### Token Registry
+
+- Stores device tokens in NVS flash
+- Keys entries by IPv4 address string
+- Keeps separate send/block lists
+- Keeps separate sandbox/production namespaces
+- Preserves entries across reboots
+
+## Important Behavioral Notes
+
+- The token store assumes device IP addresses are stable enough to be used as identifiers.
+- `POST /push` is queued into a background FreeRTOS task and limited to 3 concurrent sends.
+- `POST /blast` also runs in the background, but it sends to registered devices one-by-one within that task.
+- If APNs reports a token as unregistered during broadcast, that token is removed from the send list.
+- The API accepts a `custom_payload` field, but the current APNs payload builder only sends `aps.alert`, optional `badge`, and optional `sound`.
+- The HTTP API is plain HTTP, not HTTPS.
+
+## Requirements
+
+- ESP-IDF 5.x
+- An ESP32 target with enough memory for TLS + HTTP/2
+- Wi-Fi connectivity
+- Internet access from the device to Apple's APNs servers
+- Apple Developer account
+- APNs authentication key (`.p8`)
+- iOS app bundle ID that matches your APNs topic
+
+## IDE / Development Environment
+
+This project does not depend on one specific IDE. It is a standard ESP-IDF + CMake firmware project, so you can work with it using either the terminal or an editor with ESP-IDF integration.
+
+Recommended options:
+
+- VS Code with the Espressif IDF extension
+- CLion with ESP-IDF/CMake configured
+- Any code editor plus the `idf.py` command-line workflow
+
+For most developers, VS Code is the easiest choice because it can help with:
+
+- ESP-IDF environment setup
+- Menuconfig access
+- Build / flash / monitor tasks
+- CMake project navigation
+- Serial monitor integration
+
+Arduino IDE is not the preferred environment for this project because the firmware is written as a native ESP-IDF application rather than an Arduino sketch. It relies on ESP-IDF project structure, `menuconfig`/`sdkconfig`, component-based CMake builds, FreeRTOS task control, the ESP-IDF HTTP server, NVS, SNTP, TLS certificate bundle support, and direct APNs/HTTP/2 integration. Those pieces fit naturally in ESP-IDF tooling, but they are less convenient to manage from the Arduino IDE.
+
+## Configuration
+
+Configure the project in `idf.py menuconfig` under `APNs Configuration`.
+
+### Wi-Fi Settings
+
+- `CONFIG_APNS_WIFI_SSID`
+- `CONFIG_APNS_WIFI_PASSWORD`
+
+### Apple Push Notification Settings
+
+- `CONFIG_APNS_TEAM_ID`
+- `CONFIG_APNS_KEY_ID`
+- `CONFIG_APNS_BUNDLE_ID`
+- `CONFIG_APNS_USE_SANDBOX`
+
+### API Authentication
+
+- `CONFIG_API_AUTH_USER`
+- `CONFIG_API_AUTH_PASS`
+
+## Setup
+
+### 1. Place the APNs key
+
+Put your Apple `.p8` key here:
+
+```text
 main/certs/apns_auth_key.p8
 ```
 
-> **Never commit this file.** It is listed in `.gitignore` via the `*.p8` rule.
+The firmware embeds this file at build time.
 
-### 3. Create your local config file
-
-```bash
-# Linux / macOS
-cp .sdkconfig.defaults sdkconfig.defaults
-
-# Windows (PowerShell)
-Copy-Item .sdkconfig.defaults sdkconfig.defaults
-```
-
-Edit `sdkconfig.defaults` with your real values, then run menuconfig to review:
+### 2. Build and flash
 
 ```bash
 idf.py menuconfig
-```
-
-Navigate to **APNs Configuration** and fill in:
-
-| Setting | Description |
-|---|---|
-| WiFi SSID | Your WiFi network name |
-| WiFi Password | Your WiFi password |
-| Apple Team ID | 10-character Team ID from the Apple Developer portal |
-| APNs Key ID | 10-character Key ID of your `.p8` authentication key |
-| App Bundle ID | Bundle identifier of your iOS app (e.g. `com.example.myapp`) |
-| Use APNs Sandbox | Enable for development builds, disable for production |
-| HTTP API username | Username for Basic Auth on all API endpoints |
-| HTTP API password | Password for Basic Auth — **change from the default** |
-
-> `sdkconfig` and `sdkconfig.defaults` are git-ignored. No credentials are committed.
-
-### 4. Build and flash
-
-```bash
 idf.py build
-idf.py -p PORT flash monitor
+idf.py -p <PORT> flash monitor
 ```
 
-On first boot the device connects to WiFi, syncs time via NTP, and starts the HTTP API server. The assigned IP address is printed in the serial monitor.
+After boot, the serial log shows the IP address assigned to the ESP32 and confirms when the API server is ready.
 
-## REST API
+## API Overview
 
-All endpoints require **HTTP Basic Authentication** using the credentials configured above.
+All endpoints require HTTP Basic Auth.
 
-### Send a push notification
+Example header:
 
+```http
+Authorization: Basic <base64(username:password)>
 ```
-POST /push
-```
+
+### Send One Push
+
+`POST /push`
 
 ```json
 {
-  "device_token":   "abc123...64hexchars",
-  "title":          "Hello",
-  "body":           "World",
-  "badge":          1,
-  "sound":          "default",
-  "custom_payload": "\"category\":\"alert\"",
-  "server_type":    "sandbox"
+  "device_token": "YOUR_APNS_DEVICE_TOKEN",
+  "title": "Doorbell",
+  "body": "Someone is at the gate",
+  "badge": 1,
+  "sound": "default",
+  "server_type": "sandbox"
 }
 ```
 
-`badge`, `sound`, `custom_payload`, and `server_type` are optional. `server_type` defaults to `"sandbox"`.
+Response:
 
-**Response:** `{"status":"queued"}` — the push is dispatched asynchronously in a background task.
-
----
-
-### Broadcast to all registered devices
-
-```
-POST /blast
+```json
+{"status":"queued"}
 ```
 
-Same body as `/push` but without `device_token`. Sends the same notification to every token in the send list for the given `server_type`.
+### Broadcast To Registered Devices
 
-**Response:** `{"status":"queued"}`
+`POST /blast`
 
----
-
-### Device Token Management
-
-Tokens are stored by **(server_type, device IP)** in NVS flash. Two lists are maintained: **send** (active recipients) and **block** (opt-out / suppressed).
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/token` | Register or update a device token |
-| `GET` | `/tokens/send` | List all send-list entries |
-| `DELETE` | `/tokens/send` | Remove an entry from the send list |
-| `GET` | `/tokens/block` | List all block-list entries |
-| `POST` | `/tokens/block` | Add an entry directly to the block list |
-| `DELETE` | `/tokens/block` | Remove an entry from the block list |
-| `POST` | `/tokens/move-to-block` | Move an IP from send → block list |
-| `POST` | `/tokens/move-to-send` | Move an IP from block → send list |
-
-#### Register a token
-
-```http
-POST /token
-Content-Type: application/json
-
-{"ip":"192.168.1.42","token":"<apns-device-token>","server_type":"sandbox"}
+```json
+{
+  "title": "Alarm",
+  "body": "Water leak detected",
+  "sound": "default",
+  "server_type": "production"
+}
 ```
 
-Response: `{"status":"ok"}` | `{"status":"ignored","reason":"blocked"}` | `{"status":"ignored","reason":"no_change"}`
+Response:
 
-#### List / delete from send list
-
-```http
-GET  /tokens/send
-DELETE /tokens/send    {"ip":"192.168.1.42"}
+```json
+{"status":"queued"}
 ```
 
-#### Move between lists
+### Register A Token
 
-```http
-POST /tokens/move-to-block   {"ip":"192.168.1.42"}
-POST /tokens/move-to-send    {"ip":"192.168.1.99"}
+`POST /token`
+
+```json
+{
+  "ip": "192.168.1.42",
+  "token": "YOUR_APNS_DEVICE_TOKEN",
+  "server_type": "sandbox"
+}
 ```
 
----
+Possible responses:
 
-## Example: curl
+```json
+{"status":"ok"}
+```
+
+```json
+{"status":"ignored","reason":"blocked"}
+```
+
+```json
+{"status":"ignored","reason":"no_change"}
+```
+
+## Example curl Commands
 
 ```bash
 ESP_IP=192.168.1.10
-AUTH="admin:your-password"
+AUTH="admin:changeme"
 
-# Send a single push notification (sandbox)
-curl -u "$AUTH" -X POST http://$ESP_IP/push \
+curl -u "$AUTH" -X POST "http://$ESP_IP/token" \
   -H "Content-Type: application/json" \
-  -d '{"device_token":"YOUR_64_CHAR_DEVICE_TOKEN","title":"Test","body":"Hello from ESP32","server_type":"sandbox"}'
+  -d '{"ip":"192.168.1.42","token":"YOUR_APNS_DEVICE_TOKEN","server_type":"sandbox"}'
 
-# Register a device token
-curl -u "$AUTH" -X POST http://$ESP_IP/token \
+curl -u "$AUTH" -X POST "http://$ESP_IP/push" \
   -H "Content-Type: application/json" \
-  -d '{"ip":"192.168.1.42","token":"YOUR_TOKEN","server_type":"sandbox"}'
+  -d '{"device_token":"YOUR_APNS_DEVICE_TOKEN","title":"Test","body":"Hello from ESP32","server_type":"sandbox"}'
 
-# Blast to all registered sandbox devices
-curl -u "$AUTH" -X POST http://$ESP_IP/blast \
+curl -u "$AUTH" -X POST "http://$ESP_IP/blast" \
   -H "Content-Type: application/json" \
-  -d '{"title":"Broadcast","body":"Hi everyone","server_type":"sandbox"}'
+  -d '{"title":"Broadcast","body":"Hello everyone","server_type":"sandbox"}'
 
+<<<<<<< Updated upstream
 # List all send-list tokens
 curl -u "$AUTH" http://$ESP_IP/tokens/send
 
@@ -220,31 +286,31 @@ curl -u "$AUTH" -X POST http://$ESP_IP/tokens/move-to-block \
 curl -u "$AUTH" -X POST http://$ESP_IP/tokens/move-to-send \
   -H "Content-Type: application/json" \
   -d '{"ip":"192.168.1.42"}'
+=======
+curl -u "$AUTH" "http://$ESP_IP/tokens/send"
+>>>>>>> Stashed changes
 ```
 
-## Project Structure
+## Project Layout
 
-```
-apns_pusher/
-├── main/
-│   ├── apns.c / apns.h            # APNs client: JWT ES256 + HTTP/2 POST
-│   ├── api_server.c / api_server.h # HTTP REST API with Basic Auth
-│   ├── token_store.c / token_store.h # NVS-backed send/block token registry
-│   ├── scan.c                     # app_main: WiFi init, NTP sync, startup
-│   ├── Kconfig.projbuild          # idf.py menuconfig settings
-│   ├── CMakeLists.txt
-│   └── certs/
-│       └── apns_auth_key.p8       # ← place your .p8 key here (git-ignored)
-├── .sdkconfig.defaults            # sanitised config template (safe to commit)
-├── .gitignore
-└── CMakeLists.txt
+```text
+main/
+  apns.c            APNs client, JWT generation, HTTP/2 send path
+  api_server.c      Local REST API with Basic Auth
+  token_store.c     NVS-backed send/block token storage
+  scan.c            Boot flow, Wi-Fi, SNTP, startup wiring
+  Kconfig.projbuild Project config options
+  certs/            Place the APNs `.p8` key here
+docs/
+  API_REFERENCE.md  Endpoint reference
+todo/
+  *.md              Design notes and follow-up plans
 ```
 
 ## Security Notes
 
-- The `.p8` private key is embedded into the firmware binary at compile time. It is **never committed** to git (covered by the `*.p8` `.gitignore` rule).
-- All runtime secrets (WiFi password, APNs IDs, API credentials) live in `sdkconfig`, which is also git-ignored.
-- The HTTP API has no TLS — use it on a trusted local network only, or place the device behind a TLS-terminating reverse proxy.
-- **Change the default API password** (`changeme`) before deploying.
-
-
+- Do not expose this API directly to the public internet.
+- Change the default API password before real deployment.
+- The `.p8` key is embedded into the firmware image, so protect build artifacts and devices accordingly.
+- Because the API uses HTTP Basic Auth over plain HTTP, it should only run on a trusted network or behind your own secure network boundary.
+- This repository is a practical demo for local IoT push workflows, not a hardened production notification appliance.
