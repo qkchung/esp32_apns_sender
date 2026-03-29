@@ -190,8 +190,36 @@ curl -u "$AUTH" -X POST http://$ESP_IP/blast \
   -H "Content-Type: application/json" \
   -d '{"title":"Broadcast","body":"Hi everyone","server_type":"sandbox"}'
 
-# List all registered tokens
+# List all send-list tokens
 curl -u "$AUTH" http://$ESP_IP/tokens/send
+
+# Delete a token from the send list
+curl -u "$AUTH" -X DELETE http://$ESP_IP/tokens/send \
+  -H "Content-Type: application/json" \
+  -d '{"ip":"192.168.1.42"}'
+
+# List all block-list tokens
+curl -u "$AUTH" http://$ESP_IP/tokens/block
+
+# Add a token directly to the block list
+curl -u "$AUTH" -X POST http://$ESP_IP/tokens/block \
+  -H "Content-Type: application/json" \
+  -d '{"ip":"192.168.1.42","token":"YOUR_TOKEN","server_type":"sandbox"}'
+
+# Delete a token from the block list
+curl -u "$AUTH" -X DELETE http://$ESP_IP/tokens/block \
+  -H "Content-Type: application/json" \
+  -d '{"ip":"192.168.1.42"}'
+
+# Move a device from send list → block list
+curl -u "$AUTH" -X POST http://$ESP_IP/tokens/move-to-block \
+  -H "Content-Type: application/json" \
+  -d '{"ip":"192.168.1.42"}'
+
+# Move a device from block list → send list
+curl -u "$AUTH" -X POST http://$ESP_IP/tokens/move-to-send \
+  -H "Content-Type: application/json" \
+  -d '{"ip":"192.168.1.42"}'
 ```
 
 ## Project Structure
