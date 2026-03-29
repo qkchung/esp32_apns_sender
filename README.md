@@ -313,45 +313,50 @@ curl -u "$AUTH" -X POST "http://$ESP_IP/tokens/move-to-send" \
 
 ## Architecture Diagram
 
-```text
-                         LOCAL LAN / HOME NETWORK
+```mermaid
+%%{init: {
+  "theme": "base",
+  "themeVariables": {
+    "background": "#ffffff",
+    "primaryTextColor": "#0f172a",
+    "lineColor": "#334155",
+    "clusterBkg": "transparent",
+    "clusterBorder": "#000000"
+  }
+}}%%
 
-   +--------------------+          HTTP control / logs          +--------------------+
-   |      JLSHOME       | <-----------------------------------> |   arduino_boiler   |
-   |   iPhone app       |                                       |  boiler controller |
-   |                    |                                       |                    |
-   | - UI / scheduling  |                                       | - sensors          |
-   | - Live Activities  |                                       | - relay / timer    |
-   | - APNs token owner |                                       | - session logs     |
-   +---------+----------+                                       +---------+----------+
-             |                                                            |
-             | POST /token                                                | POST /blast
-             | register APNs token                                        | send alert event
-             v                                                            v
-                    +------------------------------------------------+
-                    |               esp32_apns_sender                |
-                    |            local APNs push gateway             |
-                    |                                                |
-                    | - stores APNs tokens                           |
-                    | - whitelist = send list                        |
-                    | - blacklist = block list                       |
-                    | - Basic Auth HTTP API                          |
-                    | - /token registration                          |
-                    | - /push and /blast delivery                    |
-                    +---------------------+--------------------------+
-                                          |
-                                          | HTTPS / HTTP2
-                                          v
-                                 +-------------------+
-                                 |    Apple APNs     |
-                                 +-------------------+
-                                          |
-                                          | push notification
-                                          v
-                                   +--------------+
-                                   |   JLSHOME    |
-                                   |   on iPhone  |
-                                   +--------------+
+flowchart TD
+    subgraph LAN["LOCAL LAN / HOME NETWORK"]
+        JLS["Boiler<br/>iPhone app<br/><br/>- UI and scheduling<br/>- Live Activities<br/>- APNs token owner"]
+        BOILER["arduino_boiler<br/>boiler controller<br/><br/>- Sensors and state<br/>- Relay and timer logic<br/>- Session logging"]
+        PUSH["esp32_apns_sender<br/>local APNs push gateway<br/><br/>- Stores APNs tokens<br/>- Whitelist = send list<br/>- Blacklist = block list<br/>- Basic Auth HTTP API<br/>- /token registration<br/>- /push and /blast delivery"]
+    end
+
+    APNS["Apple APNs"]
+    IOS["Push received Boiler app on iPhone"]
+
+    JLS <-->|HTTP control / logs| BOILER
+    JLS -->|POST /token<br/>register APNs token| PUSH
+    BOILER -->|POST /blast<br/>send alert event| PUSH
+    PUSH -->|HTTPS / HTTP2<br/>direct APNs call| APNS
+    APNS -->|push notification| IOS
+
+
+
+    style LAN fill:transparent,stroke:#000000,stroke-width:2px
+
+    classDef app fill:#dbeafe,stroke:#60a5fa,color:#0f172a,stroke-width:2px;
+    classDef device fill:#dcfce7,stroke:#4ade80,color:#0f172a,stroke-width:2px;
+    classDef gateway fill:#fef3c7,stroke:#f59e0b,color:#0f172a,stroke-width:2px;
+    classDef external fill:#e2e8f0,stroke:#94a3b8,color:#0f172a,stroke-width:2px;
+    classDef note fill:#ffffff,stroke:#cbd5e1,color:#334155,stroke-dasharray: 5 5;
+
+    class JLS,IOS app;
+    class BOILER device;
+    class PUSH gateway;
+    class APNS external;
+    class NOTIFY note;
+
 ```
 
 ## Project Layout
